@@ -144,6 +144,38 @@
   .day-loading .mini-spin{display:inline-block;animation:bob .9s ease-in-out infinite;font-size:24px;}
 
   footer{text-align:center;color:var(--muted);font-size:11px;margin-top:30px;line-height:1.6;}
+
+  /* history button */
+  .hist-open{
+    width:100%;margin-top:10px;border:1.5px solid var(--line);cursor:pointer;
+    background:var(--paper);color:var(--terra-deep);font-family:inherit;font-weight:700;
+    font-size:14px;padding:11px;border-radius:13px;transition:.15s;
+  }
+  .hist-open:active{transform:scale(.99);}
+  #histCount{color:var(--muted);font-weight:500;font-size:13px;}
+
+  /* history modal */
+  .hist-modal{position:fixed;inset:0;background:rgba(59,53,46,.45);display:none;z-index:50;align-items:flex-end;justify-content:center;}
+  .hist-modal.on{display:flex;animation:fade .2s;}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .hist-sheet{background:var(--cream);width:100%;max-width:560px;max-height:85vh;border-radius:22px 22px 0 0;display:flex;flex-direction:column;animation:slideup .28s cubic-bezier(.2,.7,.3,1);}
+  @keyframes slideup{from{transform:translateY(100%)}to{transform:none}}
+  .hist-header{display:flex;align-items:center;justify-content:space-between;padding:18px 20px 12px;border-bottom:1px solid var(--line);}
+  .hist-h-title{font-weight:700;font-size:17px;}
+  .hist-close{width:34px;height:34px;border-radius:50%;border:none;background:var(--line);color:var(--ink);font-size:20px;cursor:pointer;line-height:1;}
+  .hist-list{overflow-y:auto;padding:12px 16px;flex:1;}
+  .hist-item{display:flex;gap:10px;align-items:stretch;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px;}
+  .hist-main{flex:1;cursor:pointer;min-width:0;}
+  .hist-top{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+  .hist-tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;}
+  .hist-tag.daily{background:var(--terra-soft);color:var(--terra-deep);}
+  .hist-tag.weekly{background:var(--herb-soft);color:#46612f;}
+  .hist-date{font-size:11.5px;color:var(--muted);}
+  .hist-title{font-weight:700;font-size:15px;margin-bottom:2px;}
+  .hist-sub{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .hist-del{border:none;background:transparent;font-size:18px;cursor:pointer;padding:0 4px;align-self:center;opacity:.6;}
+  .hist-del:active{opacity:1;}
+  .hist-clear{margin:8px 16px 20px;border:none;background:transparent;color:var(--muted);font-family:inherit;font-size:13px;cursor:pointer;text-decoration:underline;}
 </style>
 </head>
 <body>
@@ -158,6 +190,8 @@
     <button class="mode-btn active" data-mode="daily">🍽 今日の1食</button>
     <button class="mode-btn" data-mode="weekly">📅 1週間おまかせ</button>
   </div>
+
+  <button class="hist-open" id="histOpen" onclick="openHistory()">📖 これまでの献立 <span id="histCount"></span></button>
 
   <div class="card" id="form">
     <div class="field">
@@ -207,6 +241,17 @@
   </div>
   <div id="out"></div>
   <footer>献立はAIの提案です。アレルギー・体調に合わせて最終判断はご家庭で。<br>はじめての食材・離乳食は少量から様子を見てあげてください。</footer>
+</div>
+
+<div class="hist-modal" id="histModal">
+  <div class="hist-sheet">
+    <div class="hist-header">
+      <div class="hist-h-title">📖 これまでの献立</div>
+      <button class="hist-close" onclick="closeHistory()" aria-label="閉じる">×</button>
+    </div>
+    <div class="hist-list" id="histList"></div>
+    <button class="hist-clear" onclick="clearHistory()">すべての履歴を削除</button>
+  </div>
 </div>
 
 <script>
@@ -340,6 +385,7 @@ async function generateDaily(){
 {"menuTitle":"献立名","summary":"一言(40字以内)","dishes":[{"name":"料理名","role":"主菜/副菜/汁物","time":"目安","ingredients":[{"name":"食材","amount":"分量","have":true}],"steps":["手順"],"forKids":"取り分けのコツ"}],"shoppingList":[{"name":"食材","amount":"量"}]}`;
   const r=await callAPI(sysDaily,user,4096);
   if(!r.json||!r.json.dishes?.length) throw new Error("献立データを読み取れませんでした");
+  saveHistory('daily', r.json);
   renderDaily(r.json);
 }
 
@@ -379,6 +425,7 @@ async function generateWeekly(){
   const r=await callAPI(sysWeekly,user,4096);
   if(!r.json||!r.json.days?.length) throw new Error("週間献立を読み取れませんでした");
   weekData=r.json;
+  saveHistory('weekly', r.json);
   renderWeekly(r.json);
 }
 
@@ -455,8 +502,92 @@ window.toggleDay=async function(i){
   }
 };
 
-/* ============ MAIN SUBMIT ============ */
-const go=document.getElementById('go');
+/* ============ HISTORY (localStorage) ============ */
+const HIST_KEY='kondate_history_v1';
+function loadHistory(){
+  try{return JSON.parse(localStorage.getItem(HIST_KEY))||[];}catch(e){return [];}
+}
+function saveHistory(type,data){
+  try{
+    const list=loadHistory();
+    let title,sub;
+    if(type==='daily'){
+      title=data.menuTitle||'献立';
+      sub=(data.dishes||[]).map(d=>d.name).join('・');
+    }else{
+      title='1週間の献立';
+      sub=data.weekSummary||'';
+    }
+    list.unshift({id:Date.now(),type,title,sub,data,savedAt:new Date().toISOString()});
+    if(list.length>50) list.length=50; // 上限50件
+    localStorage.setItem(HIST_KEY,JSON.stringify(list));
+    updateHistoryBadge();
+  }catch(e){console.warn('history save failed',e);}
+}
+function deleteHistory(id){
+  const list=loadHistory().filter(h=>h.id!==id);
+  localStorage.setItem(HIST_KEY,JSON.stringify(list));
+  renderHistoryList();
+  updateHistoryBadge();
+}
+function clearHistory(){
+  if(!confirm('履歴をすべて削除しますか？')) return;
+  localStorage.removeItem(HIST_KEY);
+  renderHistoryList();
+  updateHistoryBadge();
+}
+function fmtDate(iso){
+  const d=new Date(iso);
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function updateHistoryBadge(){
+  const n=loadHistory().length;
+  const b=document.getElementById('histCount');
+  if(b) b.textContent=n?`(${n})`:'';
+}
+
+function openHistory(){
+  document.getElementById('histModal').classList.add('on');
+  renderHistoryList();
+}
+function closeHistory(){
+  document.getElementById('histModal').classList.remove('on');
+}
+function renderHistoryList(){
+  const list=loadHistory();
+  const el=document.getElementById('histList');
+  if(!list.length){
+    el.innerHTML='<p style="text-align:center;color:var(--muted);padding:30px 0;font-size:14px">まだ履歴がありません。<br>献立をつくると、ここに残ります📝</p>';
+    return;
+  }
+  el.innerHTML=list.map(h=>`
+    <div class="hist-item">
+      <div class="hist-main" onclick="viewHistory(${h.id})">
+        <div class="hist-top">
+          <span class="hist-tag ${h.type}">${h.type==='weekly'?'📅 1週間':'🍽 1食'}</span>
+          <span class="hist-date">${fmtDate(h.savedAt)}</span>
+        </div>
+        <div class="hist-title">${esc(h.title)}</div>
+        <div class="hist-sub">${esc(h.sub||'')}</div>
+      </div>
+      <button class="hist-del" onclick="deleteHistory(${h.id})" aria-label="削除">🗑</button>
+    </div>`).join('');
+}
+window.viewHistory=function(id){
+  const h=loadHistory().find(x=>x.id===id);
+  if(!h) return;
+  closeHistory();
+  if(h.type==='weekly'){
+    weekData=h.data;
+    Object.keys(dayDetailCache).forEach(k=>delete dayDetailCache[k]);
+    renderWeekly(h.data);
+  }else{
+    renderDaily(h.data);
+  }
+};
+window.deleteHistory=deleteHistory;
+
+
 const loading=document.getElementById('loading');
 const out=document.getElementById('out');
 
@@ -477,6 +608,8 @@ go.onclick=async()=>{
     stopLoad();loading.classList.remove('on');go.disabled=false;
   }
 };
+
+updateHistoryBadge();
 </script>
 </body>
 </html>
